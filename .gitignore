@@ -1,7 +1,25 @@
-﻿bin/
+# .NET
+bin/
 obj/
 **/bin/
 **/obj/
+
+# Firebase secrets
 Firebase/
 firebase-adminsdk.json
-*.json
+
+# Node / Vite
+node_modules/
+dist/
+.env
+.env.*
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
