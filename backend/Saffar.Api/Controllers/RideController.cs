@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Saffar.Api.Data;
 using Saffar.Api.Models;
 using Saffar.Api.DTOs;
+using Saffar.Api.Hubs;
 using System.Security.Claims;
 
 namespace Saffar.Api.Controllers
@@ -13,15 +15,17 @@ namespace Saffar.Api.Controllers
     public class RidesController : ControllerBase
     {
         private readonly SaffarDbContext _context;
+        private readonly IHubContext<BookingHub> _hub;
 
-        public RidesController(SaffarDbContext context)
+        public RidesController(SaffarDbContext context, IHubContext<BookingHub> hub)
         {
             _context = context;
+            _hub = hub;
         }
         // -----------------------------------
         // GET: api/Rides
         // -----------------------------------
-        // 1️⃣ Passenger – public rides list 
+        // 1️⃣ Passenger – public rides list
         [HttpGet]
 [AllowAnonymous]
 public async Task<IActionResult> GetRides()
@@ -30,8 +34,10 @@ public async Task<IActionResult> GetRides()
         .Include(r => r.Driver)
         .Include(r => r.Vehicle)
         .Include(r => r.RideStops)
-        .Where(r => r.Status == "Active")
+        .Where(r => r.Status == "Active" || r.Status == "InProgress")
         .ToListAsync();
+
+    var passengerBookings = await GetPassengerBookingMap(rides.Select(r => r.Id).ToList());
 
     var result = rides.Select(ride => new RideResponseDto
     {
@@ -39,15 +45,16 @@ public async Task<IActionResult> GetRides()
         FromAddress = ride.FromAddress,
         ToAddress = ride.ToAddress,
         DepartureTime = ride.DepartureTime,
+        TotalSeats = ride.TotalSeats,
         AvailableSeats = ride.AvailableSeats,
         Price = ride.Price,
         Status = ride.Status,
 
-        DriverName = ride.Driver.FullName,
-        DriverPhone = ride.Driver.PhoneNumber,
+        DriverName = ride.Driver?.FullName ?? "",
+        DriverPhone = ride.Driver?.PhoneNumber ?? "",
 
-        VehicleMake = ride.Vehicle.Make,
-        VehicleModel = ride.Vehicle.Model,
+        VehicleMake = ride.Vehicle?.Make ?? "",
+        VehicleModel = ride.Vehicle?.Model ?? "",
 
         PickupStops = ride.RideStops
             .Where(s => s.StopType == "Pickup")
@@ -57,7 +64,10 @@ public async Task<IActionResult> GetRides()
         DropoffStops = ride.RideStops
             .Where(s => s.StopType == "Dropoff")
             .Select(s => s.StopName)
-            .ToList()
+            .ToList(),
+
+        HasRequested = passengerBookings.ContainsKey(ride.Id),
+        BookingStatus = passengerBookings.TryGetValue(ride.Id, out var bs) ? bs.ToString() : null
     }).ToList();
 
     return Ok(result);
@@ -95,15 +105,20 @@ public async Task<IActionResult> CreateRide(RideCreateDto dto)
     var driverId = Guid.Parse(userIdClaim);
 
     var driver = await _context.Users.FindAsync(driverId);
-    if (driver == null)
-        return Unauthorized();
 
-    if (string.IsNullOrWhiteSpace(driver.FullName)
-        || driver.Age <= 0
-        || string.IsNullOrWhiteSpace(driver.ProfileImageUrl))
-    {
-        return BadRequest("Complete your profile before creating a ride.");
-    }
+if (driver == null)
+    return Unauthorized();
+
+// 🔥 ADMIN APPROVAL CHECK
+if (!driver.IsDriverApproved)
+    return BadRequest("Driver not approved by admin");
+
+// Profile completeness check
+if (string.IsNullOrWhiteSpace(driver.FullName)
+    || string.IsNullOrWhiteSpace(driver.ProfileImageUrl))
+{
+    return BadRequest("Complete your profile before creating a ride");
+}
 
     var vehicle = await _context.Vehicles
         .Where(v => v.OwnerId == driverId)
@@ -115,8 +130,11 @@ public async Task<IActionResult> CreateRide(RideCreateDto dto)
     if (dto.DepartureTime <= DateTime.UtcNow)
         return BadRequest("Departure time must be in future.");
 
-    if (dto.AvailableSeats <= 0 || dto.Price <= 0)
-        return BadRequest("Seats and price must be greater than zero.");
+    if (dto.AvailableSeats <= 0)
+        return BadRequest("Available seats must be greater than zero.");
+
+    // Fare is set automatically by the system — not accepted from client
+    decimal fare = ResolveFare(dto.FromAddress, dto.ToAddress);
 
     var ride = new Ride
     {
@@ -125,9 +143,11 @@ public async Task<IActionResult> CreateRide(RideCreateDto dto)
         VehicleId = vehicle.Id,
         FromAddress = dto.FromAddress,
         ToAddress = dto.ToAddress,
+        PickupLocation = dto.PickupLocation,
         DepartureTime = dto.DepartureTime,
+        TotalSeats = dto.AvailableSeats,
         AvailableSeats = dto.AvailableSeats,
-        Price = dto.Price,
+        Price = fare,
         Status = "Active",
         CreatedAt = DateTime.UtcNow
     };
@@ -219,37 +239,44 @@ public async Task<IActionResult> Search(string pickup, string toCity)
             .Where(r =>
                 r.FromAddress.ToLower().Contains(pickup) &&
                 r.ToAddress.ToLower().Contains(toCity) &&
-                r.Status == "Active"
+                (r.Status == "Active" || r.Status == "InProgress")
             )
             .ToListAsync();
-            var result = rides.Select(r => new RideResponseDto
-{
-    Id = r.Id,
-    FromAddress = r.FromAddress,
-    ToAddress = r.ToAddress,
-    DepartureTime = r.DepartureTime,
-    AvailableSeats = r.AvailableSeats,
-    Price = r.Price,
-    Status = r.Status,
 
-    DriverName = r.Driver!.FullName,
-    DriverPhone = r.Driver!.PhoneNumber,
+        var passengerBookings = await GetPassengerBookingMap(rides.Select(r => r.Id).ToList());
 
-    VehicleMake = r.Vehicle!.Make,
-    VehicleModel = r.Vehicle!.Model,
+        var result = rides.Select(r => new RideResponseDto
+        {
+            Id = r.Id,
+            FromAddress = r.FromAddress,
+            ToAddress = r.ToAddress,
+            DepartureTime = r.DepartureTime,
+            TotalSeats = r.TotalSeats,
+            AvailableSeats = r.AvailableSeats,
+            Price = r.Price,
+            Status = r.Status,
 
-    PickupStops = r.RideStops
-        .Where(s => s.StopType == "Pickup")
-        .Select(s => s.StopName)
-        .ToList(),
+            DriverName = r.Driver?.FullName ?? "",
+            DriverPhone = r.Driver?.PhoneNumber ?? "",
 
-    DropoffStops = r.RideStops
-        .Where(s => s.StopType == "Dropoff")
-        .Select(s => s.StopName)
-        .ToList()
-}).ToList();
+            VehicleMake = r.Vehicle?.Make ?? "",
+            VehicleModel = r.Vehicle?.Model ?? "",
 
-return Ok(result);
+            PickupStops = r.RideStops
+                .Where(s => s.StopType == "Pickup")
+                .Select(s => s.StopName)
+                .ToList(),
+
+            DropoffStops = r.RideStops
+                .Where(s => s.StopType == "Dropoff")
+                .Select(s => s.StopName)
+                .ToList(),
+
+            HasRequested = passengerBookings.ContainsKey(r.Id),
+            BookingStatus = passengerBookings.TryGetValue(r.Id, out var bs) ? bs.ToString() : null
+        }).ToList();
+
+        return Ok(result);
 
     }
     catch (Exception ex)
@@ -261,19 +288,120 @@ return Ok(result);
 [Authorize(Roles = "Driver")]
 public async Task<IActionResult> GetMyRides()
 {
-    var driverIdClaim = User.FindFirst("userId");
-
-    if (driverIdClaim == null)
-        return Unauthorized("Driver ID not found");
+    var driverIdClaim = User.FindFirst(ClaimTypes.NameIdentifier);
+    if (driverIdClaim == null) return Unauthorized("Driver ID not found");
 
     var driverId = Guid.Parse(driverIdClaim.Value);
 
     var rides = await _context.Rides
         .Where(r => r.DriverId == driverId)
         .OrderByDescending(r => r.DepartureTime)
+        .Select(r => new {
+            r.Id,
+            r.FromAddress,
+            r.ToAddress,
+            r.PickupLocation,
+            r.DepartureTime,
+            r.TotalSeats,
+            r.AvailableSeats,
+            r.Price,
+            r.Status,
+            r.DriverLat,
+            r.DriverLng,
+            r.DriverLocationUpdatedAt,
+            acceptedCount = r.Bookings.Count(b => b.Status == BookingStatus.Accepted || b.Status == BookingStatus.Completed),
+            passengers = r.Bookings
+                .Where(b => b.Status == BookingStatus.Accepted || b.Status == BookingStatus.Completed)
+                .Select(b => new {
+                    id            = b.Id,
+                    fullName      = b.Passenger.FullName ?? "Unknown",
+                    phoneNumber   = b.Passenger.PhoneNumber,
+                    seatsBooked   = b.SeatsBooked,
+                    pickupStop    = b.PickupStop,
+                    passengerAddress = b.PassengerAddress,
+                    totalPrice    = b.TotalPrice > 0 ? b.TotalPrice : r.Price * b.SeatsBooked
+                }).ToList()
+        })
         .ToListAsync();
 
     return Ok(rides);
+}
+
+// PUT: /api/rides/{id}/start  — driver starts the ride
+[HttpPut("{id}/start")]
+[Authorize(Roles = "Driver")]
+public async Task<IActionResult> StartRide(Guid id)
+{
+    var driverId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
+
+    var ride = await _context.Rides
+        .FirstOrDefaultAsync(r => r.Id == id && r.DriverId == driverId);
+
+    if (ride == null) return NotFound("Ride not found");
+    if (ride.Status == "InProgress") return Ok(new { message = "Already started" });
+    if (ride.Status != "Active") return BadRequest("Ride cannot be started in its current state");
+
+    var acceptedCount = await _context.Bookings
+        .CountAsync(b => b.RideId == id && b.Status == BookingStatus.Accepted);
+
+    if (acceptedCount == 0)
+        return BadRequest("Cannot start ride without at least one accepted passenger");
+
+    ride.Status = "InProgress";
+    await _context.SaveChangesAsync();
+
+    return Ok(new { message = "Ride started" });
+}
+
+// PUT: /api/rides/{id}/location  — driver sends live GPS
+[HttpPut("{id}/location")]
+[Authorize(Roles = "Driver")]
+public async Task<IActionResult> UpdateDriverLocation(Guid id, [FromBody] DriverLocationDto dto)
+{
+    var driverId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
+
+    var ride = await _context.Rides
+        .FirstOrDefaultAsync(r => r.Id == id && r.DriverId == driverId);
+
+    if (ride == null) return NotFound();
+    if (ride.Status != "InProgress") return BadRequest("Ride not in progress");
+
+    ride.DriverLat = dto.Lat;
+    ride.DriverLng = dto.Lng;
+    ride.DriverLocationUpdatedAt = DateTime.UtcNow;
+
+    await _context.SaveChangesAsync();
+
+    await _hub.Clients.All.SendAsync("DriverLocationUpdated", new
+    {
+        rideId = id.ToString(),
+        lat    = dto.Lat,
+        lng    = dto.Lng,
+        updatedAt = DateTime.UtcNow
+    });
+
+    return Ok();
+}
+
+// GET: /api/rides/{id}/location  — passenger polls driver location
+[HttpGet("{id}/location")]
+[Authorize]
+public async Task<IActionResult> GetDriverLocation(Guid id)
+{
+    var ride = await _context.Rides
+        .Where(r => r.Id == id)
+        .Select(r => new {
+            r.Status,
+            r.DriverLat,
+            r.DriverLng,
+            r.DriverLocationUpdatedAt,
+            r.PickupLocation
+        })
+        .FirstOrDefaultAsync();
+
+    if (ride == null) return NotFound();
+
+    return Ok(ride);
 }
 [HttpPut("{id}")]
 [Authorize(Roles = "Driver")]
@@ -335,14 +463,20 @@ public async Task<IActionResult> CompleteRide(Guid id)
 
     ride.Status = "Completed";
 
+    // Mark all accepted bookings as Completed
+    var acceptedBookings = await _context.Bookings
+        .Where(b => b.RideId == ride.Id && b.Status == BookingStatus.Accepted)
+        .ToListAsync();
+
+    foreach (var bk in acceptedBookings)
+        bk.Status = BookingStatus.Completed;
+
 await _context.SaveChangesAsync();
 
-// Get accepted bookings
-var completedBookings = await _context.Bookings
-    .Where(b => b.RideId == ride.Id && b.Status == "Accepted")
-    .ToListAsync();
+// Get accepted bookings (now marked Completed)
+var completedBookings = acceptedBookings;
 
-decimal totalEarning = completedBookings.Sum(b => ride.Price);
+decimal totalEarning = completedBookings.Sum(b => b.TotalPrice > 0 ? b.TotalPrice : ride.Price * b.SeatsBooked);
 
 // Get driver
 var driver = await _context.Users.FindAsync(driverId);
@@ -408,5 +542,38 @@ public async Task<IActionResult> RateDriver(Guid id, [FromBody] int stars)
 
     return Ok("Driver rated successfully");
 }
+
+    // Returns a map of rideId → latest booking status for the authenticated passenger.
+    // Returns empty dict if the caller is not a passenger.
+    private async Task<Dictionary<Guid, BookingStatus>> GetPassengerBookingMap(List<Guid> rideIds)
+    {
+        var claim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (claim == null || rideIds.Count == 0)
+            return new Dictionary<Guid, BookingStatus>();
+
+        var passengerId = Guid.Parse(claim);
+
+        var bookings = await _context.Bookings
+            .Where(b => b.PassengerId == passengerId && rideIds.Contains(b.RideId))
+            .OrderByDescending(b => b.CreatedAt)
+            .ToListAsync();
+
+        // Keep only the most recent booking per ride
+        return bookings
+            .GroupBy(b => b.RideId)
+            .ToDictionary(g => g.Key, g => g.First().Status);
+    }
+
+    // ── Fare table (admin-controlled) ──────────────────────────────────────────
+    private static decimal ResolveFare(string from, string to)
+    {
+        var key = $"{from.Trim().ToLower()}→{to.Trim().ToLower()}";
+        return key switch
+        {
+            "karachi→hyderabad" => 1200,
+            "hyderabad→karachi" => 1200,
+            _ => 1200   // default fare for any unlisted route
+        };
+    }
     }
 }

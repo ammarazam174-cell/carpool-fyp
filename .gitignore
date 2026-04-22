@@ -23,3 +23,7 @@ dist/
 # OS
 Thumbs.db
 .DS_Store
+
+# Agents
+.AGENTS.md
+.skills/

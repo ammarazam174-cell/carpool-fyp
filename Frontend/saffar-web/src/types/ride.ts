@@ -8,6 +8,7 @@ export interface Ride {
   fromAddress: string;
   toAddress: string;
   departureTime: string;
+  totalSeats: number;
   availableSeats: number;
   price: number;
   status: string;
@@ -20,6 +21,9 @@ export interface Ride {
 
   pickupStops: string[];
   dropoffStops: string[];
-  
+
   stops: RideStop[];
+
+  hasRequested: boolean;
+  bookingStatus: "Pending" | "Accepted" | "Rejected" | "Cancelled" | "Completed" | null;
 }

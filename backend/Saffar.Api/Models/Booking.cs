@@ -3,9 +3,19 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Saffar.Api.Models
 {
+    public enum BookingStatus
+    {
+        Pending,
+        Accepted,
+        Rejected,
+        Cancelled,
+        Completed
+    }
+
     public class Booking
     {
-        public Guid Id { get; set; }
+        [Key]
+        public Guid Id { get; set; } = Guid.NewGuid();
 
         [Required]
         public Guid RideId { get; set; }
@@ -19,13 +29,19 @@ namespace Saffar.Api.Models
 
         public int SeatsBooked { get; set; }
 
-        [Required]
-        public string Status { get; set; } = "Pending"; // Pending | Accepted | Rejected
+        public BookingStatus Status { get; set; } = BookingStatus.Pending;
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime BookedAt { get; set; } = DateTime.UtcNow;
 
         public string? PickupStop { get; set; }
         public string? DropoffStop { get; set; }
+
+        // 📍 PASSENGER LOCATION
+        public double? PassengerLatitude { get; set; }
+        public double? PassengerLongitude { get; set; }
+        public string? PassengerAddress { get; set; }
+
+        public decimal TotalPrice { get; set; }
     }
 }

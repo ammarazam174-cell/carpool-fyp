@@ -66,8 +66,17 @@ namespace Saffar.Api.Migrations
                     b.Property<string>("DropoffStop")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("PassengerAddress")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<Guid>("PassengerId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<double?>("PassengerLatitude")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("PassengerLongitude")
+                        .HasColumnType("float");
 
                     b.Property<string>("PickupStop")
                         .HasColumnType("nvarchar(max)");
@@ -75,23 +84,20 @@ namespace Saffar.Api.Migrations
                     b.Property<Guid>("RideId")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<Guid?>("RideId1")
-                        .HasColumnType("uniqueidentifier");
-
                     b.Property<int>("SeatsBooked")
                         .HasColumnType("int");
 
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("TotalPrice")
+                        .HasColumnType("decimal(18,2)");
 
                     b.HasKey("Id");
 
                     b.HasIndex("PassengerId");
 
                     b.HasIndex("RideId");
-
-                    b.HasIndex("RideId1");
 
                     b.ToTable("Bookings");
                 });
@@ -114,10 +120,22 @@ namespace Saffar.Api.Migrations
                     b.Property<Guid>("DriverId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<double?>("DriverLat")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("DriverLng")
+                        .HasColumnType("float");
+
+                    b.Property<DateTime?>("DriverLocationUpdatedAt")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("FromAddress")
                         .IsRequired()
                         .HasMaxLength(250)
                         .HasColumnType("nvarchar(250)");
+
+                    b.Property<string>("PickupLocation")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<decimal>("Price")
                         .HasPrecision(18, 2)
@@ -134,6 +152,9 @@ namespace Saffar.Api.Migrations
                         .IsRequired()
                         .HasMaxLength(250)
                         .HasColumnType("nvarchar(250)");
+
+                    b.Property<int>("TotalSeats")
+                        .HasColumnType("int");
 
                     b.Property<Guid>("VehicleId")
                         .HasColumnType("uniqueidentifier");
@@ -183,21 +204,53 @@ namespace Saffar.Api.Migrations
                     b.Property<int?>("Age")
                         .HasColumnType("int");
 
+                    b.Property<string>("CNIC")
+                        .HasMaxLength(15)
+                        .HasColumnType("nvarchar(15)");
+
+                    b.Property<string>("CNICImageUrl")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DateOfBirth")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DriverStatus")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<decimal>("Earnings")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<string>("FullName")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Gender")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("IsDriverApproved")
+                        .HasColumnType("bit");
 
                     b.Property<bool>("IsProfileComplete")
                         .HasColumnType("bit");
 
                     b.Property<bool>("IsVerified")
                         .HasColumnType("bit");
+
+                    b.Property<string>("LicenseImageUrl")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("PhoneNumber")
                         .IsRequired()
@@ -210,10 +263,25 @@ namespace Saffar.Api.Migrations
                     b.Property<double>("Rating")
                         .HasColumnType("float");
 
+                    b.Property<DateTime?>("ResetOtpExpiry")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ResetOtpHash")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("Role")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("VehicleModel")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("VehicleName")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("VehicleNumber")
+                        .HasColumnType("nvarchar(max)");
 
                     b.HasKey("Id");
 
@@ -231,6 +299,9 @@ namespace Saffar.Api.Migrations
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("bit");
 
                     b.Property<string>("Make")
                         .IsRequired()
@@ -287,14 +358,10 @@ namespace Saffar.Api.Migrations
                         .IsRequired();
 
                     b.HasOne("Saffar.Api.Models.Ride", "Ride")
-                        .WithMany()
+                        .WithMany("Bookings")
                         .HasForeignKey("RideId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-
-                    b.HasOne("Saffar.Api.Models.Ride", null)
-                        .WithMany("Bookings")
-                        .HasForeignKey("RideId1");
 
                     b.Navigation("Passenger");
 

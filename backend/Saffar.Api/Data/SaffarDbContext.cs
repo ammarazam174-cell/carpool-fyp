@@ -75,7 +75,7 @@ namespace Saffar.Api.Data
             // Booking -> Ride
             modelBuilder.Entity<Booking>()
                 .HasOne(b => b.Ride)
-                .WithMany()
+                .WithMany(r => r.Bookings)
                 .HasForeignKey(b => b.RideId)
                 .OnDelete(DeleteBehavior.Restrict);
 

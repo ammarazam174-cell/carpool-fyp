@@ -26,7 +26,7 @@ namespace Saffar.Api.Models
 
         public DateTime DepartureTime { get; set; }
 
-        // ✅ SINGLE SOURCE OF TRUTH
+        public int TotalSeats { get; set; }
         public int AvailableSeats { get; set; }
 
         public decimal Price { get; set; }
@@ -35,6 +35,14 @@ namespace Saffar.Api.Models
 
 
         public string Status { get; set; } = "Active";
+        // "Active" | "InProgress" | "Completed" | "Cancelled"
+
+        public string? PickupLocation { get; set; }
+
+        // Live driver location (updated every 5-10s while ride is InProgress)
+        public double? DriverLat { get; set; }
+        public double? DriverLng { get; set; }
+        public DateTime? DriverLocationUpdatedAt { get; set; }
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

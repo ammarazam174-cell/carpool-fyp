@@ -61,33 +61,33 @@ public async Task<IActionResult> GetDriverEarnings()
 
     var now = DateTime.UtcNow;
 
-    // ✅ Total Earnings
+    // Total Earnings — sum TotalPrice from completed bookings (seats × price each)
     var totalEarnings = await _context.Bookings
         .Include(b => b.Ride)
         .Where(b =>
-            b.Status == "Accepted" &&
+            b.Status == BookingStatus.Completed &&
             b.Ride.DriverId == driverId)
-        .SumAsync(b => (decimal?)b.Ride.Price) ?? 0;
+        .SumAsync(b => (decimal?)(b.TotalPrice > 0 ? b.TotalPrice : b.Ride.Price * b.SeatsBooked)) ?? 0;
 
-    // ✅ Total Accepted Rides
+    // Total Completed Rides count
     var totalAcceptedRides = await _context.Bookings
         .Include(b => b.Ride)
         .Where(b =>
-            b.Status == "Accepted" &&
+            b.Status == BookingStatus.Completed &&
             b.Ride.DriverId == driverId)
         .Select(b => b.RideId)
         .Distinct()
         .CountAsync();
 
-    // ✅ Monthly Earnings
+    // Monthly Earnings — same calculation, filtered to current month
     var monthlyEarnings = await _context.Bookings
         .Include(b => b.Ride)
         .Where(b =>
-            b.Status == "Accepted" &&
+            b.Status == BookingStatus.Completed &&
             b.Ride.DriverId == driverId &&
             b.CreatedAt.Month == now.Month &&
             b.CreatedAt.Year == now.Year)
-        .SumAsync(b => (decimal?)b.Ride.Price) ?? 0;
+        .SumAsync(b => (decimal?)(b.TotalPrice > 0 ? b.TotalPrice : b.Ride.Price * b.SeatsBooked)) ?? 0;
 
     var result = new DriverEarningsDto
     {
@@ -98,67 +98,195 @@ public async Task<IActionResult> GetDriverEarnings()
 
     return Ok(result);
 }
+// GET: api/users/driver-analytics
+[HttpGet("driver-analytics")]
 [Authorize(Roles = "Driver")]
-[HttpGet("driver/profile")]
-public async Task<IActionResult> GetDriverProfile()
+public async Task<IActionResult> GetDriverAnalytics()
 {
-    var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    var driverIdClaim = User.FindFirst(ClaimTypes.NameIdentifier);
+    if (driverIdClaim == null) return Unauthorized();
+    var driverId = Guid.Parse(driverIdClaim.Value);
+    var now  = DateTime.UtcNow;
+    var today = now.Date;
 
-    if (userId == null)
+    // All completed bookings for this driver
+    var bookings = await _context.Bookings
+        .Include(b => b.Ride)
+        .Where(b => b.Status == BookingStatus.Completed && b.Ride.DriverId == driverId)
+        .ToListAsync();
+
+    decimal Earn(Booking b) => b.TotalPrice > 0 ? b.TotalPrice : b.Ride.Price * b.SeatsBooked;
+
+    decimal totalEarnings      = bookings.Sum(Earn);
+    int     totalRides         = bookings.Select(b => b.RideId).Distinct().Count();
+    decimal thisMonthEarnings  = bookings
+        .Where(b => b.Ride.DepartureTime.Month == now.Month && b.Ride.DepartureTime.Year == now.Year)
+        .Sum(Earn);
+    decimal todayEarnings = bookings
+        .Where(b => b.Ride.DepartureTime.Date == today)
+        .Sum(Earn);
+
+    // Last 30 days grouped by departure date
+    var cutoff = today.AddDays(-29);
+    var dailyData = bookings
+        .Where(b => b.Ride.DepartureTime.Date >= cutoff)
+        .GroupBy(b => b.Ride.DepartureTime.Date)
+        .Select(g => new
+        {
+            date     = g.Key.ToString("dd MMM"),
+            earnings = g.Sum(Earn)
+        })
+        .OrderBy(x => x.date)
+        .ToList();
+
+    // Last 5 completed rides with per-ride earnings
+    var recentRides = bookings
+        .GroupBy(b => b.RideId)
+        .Select(g => new
+        {
+            fromAddress   = g.First().Ride.FromAddress,
+            toAddress     = g.First().Ride.ToAddress,
+            departureTime = g.First().Ride.DepartureTime,
+            earnings      = g.Sum(Earn),
+            passengers    = g.Count()
+        })
+        .OrderByDescending(r => r.departureTime)
+        .Take(5)
+        .ToList();
+
+    return Ok(new
+    {
+        totalEarnings,
+        totalRides,
+        thisMonthEarnings,
+        todayEarnings,
+        dailyData,
+        recentRides
+    });
+}
+
+[HttpGet("driver/profile")]
+[Authorize(Roles = "Driver")]
+public IActionResult GetDriverProfile()
+{
+    var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+    if (userIdClaim == null)
         return Unauthorized();
 
-    var driver = await _context.Users.FindAsync(Guid.Parse(userId));
+    var userId = Guid.Parse(userIdClaim);
 
-    if (driver == null)
-        return NotFound();
-
-    var profile = new DriverProfileResponseDto
-{
-    FullName = driver.FullName ?? "",
-    Age = driver.Age,
-    PhoneNumber = driver.PhoneNumber,
-    ProfileImageUrl = driver.ProfileImageUrl,
-    Rating = driver.Rating,
-};
-
-    return Ok(profile);
-}
-[HttpPut("driver/profile")]
-[Authorize(Roles = "Driver")]
-public async Task<IActionResult> UpdateDriverProfile(
-    [FromForm] DriverProfileDto dto)
-{
-    var userId = Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
-
-    var user = await _context.Users.FindAsync(userId);
+    var user = _context.Users.FirstOrDefault(x => x.Id == userId);
 
     if (user == null)
         return NotFound();
 
-    user.FullName = dto.FullName;
-    user.Age = dto.Age;
-
-    if (dto.ProfileImage != null)
+    return Ok(new
     {
-        var fileName = Guid.NewGuid() + Path.GetExtension(dto.ProfileImage.FileName);
-        var filePath = Path.Combine("wwwroot/uploads", fileName);
+        fullName          = user.FullName,
+        age               = user.Age,
+        email             = user.Email,
+        phoneNumber       = user.PhoneNumber,
+        cnic              = user.CNIC,
+        profileImageUrl   = user.ProfileImageUrl,
+        cnicImageUrl      = user.CNICImageUrl,
+        licenseImageUrl   = user.LicenseImageUrl,
+        rating            = user.Rating,
+        isProfileComplete = user.IsProfileComplete
+    });
+}
+[HttpPut("driver/profile")]
+[Authorize(Roles = "Driver")]
+public async Task<IActionResult> UpdateDriverProfile([FromForm] CompleteProfileDto dto)
+{
+    var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    if (userId == null) return Unauthorized();
 
-        using (var stream = new FileStream(filePath, FileMode.Create))
-        {
-            await dto.ProfileImage.CopyToAsync(stream);
-        }
+    var user = _context.Users.FirstOrDefault(u => u.Id.ToString() == userId);
+    if (user == null) return NotFound();
 
-        user.ProfileImageUrl = "/uploads/" + fileName;
-    }
+    // Documents are managed exclusively via /api/profile/upload-documents
+    user.FullName = dto.FullName;
+    user.Age      = dto.Age;
 
     await _context.SaveChangesAsync();
 
-    user.IsProfileComplete = 
-    !string.IsNullOrWhiteSpace(user.FullName)
-    && user.Age > 0
-    && !string.IsNullOrWhiteSpace(user.ProfileImageUrl);
+    return Ok(new { message = "Profile updated successfully" });
+}
+[Authorize(Roles = "Admin")]
+[HttpGet("admin/pending-drivers")]
+public IActionResult GetPendingDrivers()
+{
+    var drivers = _context.Users
+        .Where(u => u.Role == "Driver" && !u.IsDriverApproved)
+        .Select(u => new
+        {
+            u.Id,
+            u.FullName,
+            u.PhoneNumber,
+            u.CNICImageUrl,
+            u.LicenseImageUrl,
+            u.VehicleName,
+            u.VehicleNumber
+        })
+        .ToList();
 
-    return Ok(user);
+    return Ok(drivers);
+}
+[Authorize(Roles = "Admin")]
+[HttpPut("admin/approve-driver/{id}")]
+public IActionResult ApproveDriver(Guid id)
+{
+    var user = _context.Users.FirstOrDefault(u => u.Id == id);
+
+    if (user == null) return NotFound();
+
+    user.IsDriverApproved = true;
+
+    _context.SaveChanges();
+
+    return Ok(new { message = "Driver approved successfully" });
+}
+[Authorize(Roles = "Passenger")]
+[HttpGet("passenger/profile")]
+public IActionResult GetPassengerProfile()
+{
+    var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    if (userId == null) return Unauthorized();
+
+    var user = _context.Users.FirstOrDefault(u => u.Id.ToString() == userId);
+    if (user == null) return NotFound();
+
+    return Ok(new
+    {
+        fullName          = user.FullName,
+        age               = user.Age,
+        gender            = user.Gender,
+        phoneNumber       = user.PhoneNumber,
+        cnic              = user.CNIC,
+        profileImageUrl   = user.ProfileImageUrl,
+        cnicImageUrl      = user.CNICImageUrl,
+        isProfileComplete = user.IsProfileComplete
+    });
+}
+
+[Authorize(Roles = "Passenger")]
+[HttpPost("passenger/profile")]
+public async Task<IActionResult> CompletePassengerProfile([FromForm] PassengerProfileDto dto)
+{
+    var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    if (userId == null) return Unauthorized();
+
+    var user = _context.Users.FirstOrDefault(x => x.Id.ToString() == userId);
+    if (user == null) return NotFound();
+
+    // Documents are managed exclusively via /api/profile/upload-documents
+    user.Age    = dto.Age;
+    user.Gender = dto.Gender;
+
+    await _context.SaveChangesAsync();
+
+    return Ok("Passenger profile updated");
 }
     }
 }

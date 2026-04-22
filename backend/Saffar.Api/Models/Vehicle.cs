@@ -13,6 +13,7 @@ namespace Saffar.Api.Models
     public string Model { get; set; } = null!;
     public string PlateNumber { get; set; } = null!;
     public int Seats { get; set; }
+    public bool IsDefault { get; set; } = false;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public User Owner { get; set; } = null!;

@@ -1,10 +1,12 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.SignalR;
 using Saffar.Api.Data;
 using Saffar.Api.Models;
 using Saffar.Api.DTOs;
 using Saffar.Api.Services;
+using Saffar.Api.Hubs;
 using System.Security.Claims;
 
 namespace Saffar.Api.Controllers
@@ -15,13 +17,38 @@ namespace Saffar.Api.Controllers
     {
         private readonly SaffarDbContext _context;
         private readonly PushNotificationService _push;
+        private readonly IHubContext<BookingHub> _hub;
+
         public BookingsController(
-    SaffarDbContext context,
-    PushNotificationService push)
-{
-    _context = context;
-    _push = push;
-}
+            SaffarDbContext context,
+            PushNotificationService push,
+            IHubContext<BookingHub> hub)
+        {
+            _context = context;
+            _push = push;
+            _hub = hub;
+        }
+
+        private async Task BroadcastBookingUpdate(Guid bookingId, Guid rideId, Guid passengerId, string status)
+        {
+            await _hub.Clients.All.SendAsync("BookingUpdated", new
+            {
+                bookingId,
+                rideId,
+                passengerId,
+                status
+            });
+        }
+
+        private async Task BroadcastSeatsUpdated(Guid rideId, int availableSeats, int totalSeats)
+        {
+            await _hub.Clients.All.SendAsync("RideSeatsUpdated", new
+            {
+                rideId,
+                availableSeats,
+                totalSeats
+            });
+        }
         // -----------------------------------
         // GET: api/Bookings (ADMIN / DEBUG)
         // -----------------------------------
@@ -67,28 +94,46 @@ public async Task<IActionResult> CreateBooking(CreateBookingDto dto)
 
     var passengerId = Guid.Parse(passengerIdStr);
 
+    // Block unverified passengers
+    var passenger = await _context.Users.FindAsync(passengerId);
+    if (passenger == null) return Unauthorized();
+    if (!passenger.IsVerified)
+        return BadRequest(new { message = "Your profile is pending admin approval. You cannot book rides yet." });
+
     var ride = await _context.Rides.FindAsync(dto.RideId);
     if (ride == null)
         return NotFound("Ride not found");
 
-    if (ride.AvailableSeats < dto.Seats)
-        return BadRequest("Not enough seats available");
+    if (ride.Status != "Active")
+        return BadRequest("Ride is not available for booking");
 
-    var alreadyBooked = await _context.Bookings.AnyAsync(b =>
-        b.RideId == dto.RideId &&
-        b.PassengerId == passengerId);
+    if (dto.Seats <= 0)
+        return BadRequest("Invalid seat count");
 
-    if (alreadyBooked)
+    if (dto.Seats > ride.AvailableSeats)
+        return BadRequest($"Only {ride.AvailableSeats} seat{(ride.AvailableSeats == 1 ? "" : "s")} available");
+
+    var existingBooking = await _context.Bookings
+        .Where(b => b.RideId == dto.RideId && b.PassengerId == passengerId)
+        .OrderByDescending(b => b.CreatedAt)
+        .FirstOrDefaultAsync();
+
+    if (existingBooking != null &&
+        (existingBooking.Status == BookingStatus.Pending || existingBooking.Status == BookingStatus.Accepted))
         return BadRequest("You already requested this ride");
 
     var booking = new Booking
     {
         RideId = dto.RideId,
-        PassengerId = passengerId,   // ✅ FIXED
+        PassengerId = passengerId,
         SeatsBooked = dto.Seats,
+        TotalPrice = ride.Price * dto.Seats,
         PickupStop = dto.PickupStop,
         DropoffStop = dto.DropoffStop,
-        Status = "Pending",
+        PassengerLatitude = dto.PassengerLatitude,
+        PassengerLongitude = dto.PassengerLongitude,
+        PassengerAddress = dto.PassengerAddress,
+        Status = BookingStatus.Pending,
         CreatedAt = DateTime.UtcNow
     };
 
@@ -97,12 +142,23 @@ public async Task<IActionResult> CreateBooking(CreateBookingDto dto)
     _context.Bookings.Add(booking);
     await _context.SaveChangesAsync();
 
+    await _hub.Clients.All.SendAsync("NewBookingRequest", new
+    {
+        bookingId = booking.Id,
+        rideId    = booking.RideId
+    });
+
+    await BroadcastSeatsUpdated(ride.Id, ride.AvailableSeats, ride.TotalSeats);
+
     return Ok(new
     {
         message = "Booking request sent successfully",
         bookingId = booking.Id,
-        pickupStop = booking.PickupStop,   // ✅ If you want to return it
-        dropoffStop = booking.DropoffStop
+        pickupStop = booking.PickupStop,
+        dropoffStop = booking.DropoffStop,
+        passengerAddress = booking.PassengerAddress,
+        passengerLatitude = booking.PassengerLatitude,
+        passengerLongitude = booking.PassengerLongitude
     });
 }
 
@@ -149,16 +205,16 @@ public async Task<IActionResult> AcceptBooking(Guid id)
     if (booking == null)
         return NotFound("Booking not found");
 
-    if (booking.Status != "Pending")
+    if (booking.Status != BookingStatus.Pending)
         return BadRequest("Booking already processed");
 
-    if (booking.Ride.AvailableSeats <= 0)
-        return BadRequest("Ride is full");
-
-    booking.Status = "Accepted";
-    booking.Ride.AvailableSeats--;
+    // Seats were already reserved when the passenger booked — no decrement needed here.
+    // Just confirm the reservation by changing status.
+    booking.Status = BookingStatus.Accepted;
 
     await _context.SaveChangesAsync();
+
+    await BroadcastBookingUpdate(booking.Id, booking.RideId, booking.PassengerId, "Accepted");
 
     var notification = await _context.UserNotifications
         .FirstOrDefaultAsync(x => x.UserId == booking.PassengerId);
@@ -199,11 +255,17 @@ var driverId = Guid.Parse(driverIdClaim.Value);
     if (booking == null)
         return NotFound("Booking not found");
 
-    if (booking.Status != "Pending")
+    if (booking.Status != BookingStatus.Pending)
         return BadRequest("Booking already processed");
 
-    booking.Status = "Rejected";
+    booking.Status = BookingStatus.Rejected;
+    // Refund the seats that were reserved at booking time
+    booking.Ride.AvailableSeats += booking.SeatsBooked;
+
     await _context.SaveChangesAsync();
+
+    await BroadcastBookingUpdate(booking.Id, booking.RideId, booking.PassengerId, "Rejected");
+    await BroadcastSeatsUpdated(booking.RideId, booking.Ride.AvailableSeats, booking.Ride.TotalSeats);
 
     var notification = await _context.UserNotifications
         .FirstOrDefaultAsync(x => x.UserId == booking.PassengerId);
@@ -225,18 +287,45 @@ var driverId = Guid.Parse(driverIdClaim.Value);
 public async Task<IActionResult> GetDriverBookings()
 {
     var driverIdClaim = User.FindFirst(ClaimTypes.NameIdentifier);
-
-    if (driverIdClaim == null)
-        return Unauthorized("UserId claim missing");
+    if (driverIdClaim == null) return Unauthorized("UserId claim missing");
 
     var driverId = Guid.Parse(driverIdClaim.Value);
 
     var bookings = await _context.Bookings
-    .Include(b => b.Ride)
-    .Include(b => b.Passenger)   // 🔥 THIS WAS MISSING
-    .Where(b => b.Ride.DriverId == driverId)
-    .OrderByDescending(b => b.CreatedAt)
-    .ToListAsync();
+        .Include(b => b.Ride)
+        .Include(b => b.Passenger)
+        .Where(b => b.Ride.DriverId == driverId)
+        .OrderByDescending(b => b.CreatedAt)
+        .Select(b => new
+        {
+            id                 = b.Id,
+            rideId             = b.RideId,
+            status             = b.Status.ToString(),
+            seatsBooked        = b.SeatsBooked,
+            pickupStop         = b.PickupStop,
+            dropoffStop        = b.DropoffStop,
+            passengerAddress   = b.PassengerAddress,
+            passengerLatitude  = b.PassengerLatitude,
+            passengerLongitude = b.PassengerLongitude,
+            createdAt          = b.CreatedAt,
+            rideAvailableSeats = b.Ride.AvailableSeats,
+            rideTotalSeats     = b.Ride.TotalSeats,
+            pricePerSeat       = b.Ride.Price,
+            totalPrice         = b.TotalPrice > 0 ? b.TotalPrice : b.Ride.Price * b.SeatsBooked,
+            ride = new
+            {
+                fromAddress   = b.Ride.FromAddress,
+                toAddress     = b.Ride.ToAddress,
+                departureTime = b.Ride.DepartureTime,
+                price         = b.Ride.Price
+            },
+            passenger = new
+            {
+                fullName    = b.Passenger.FullName,
+                phoneNumber = b.Passenger.PhoneNumber
+            }
+        })
+        .ToListAsync();
 
     return Ok(bookings);
 }
@@ -264,20 +353,21 @@ public async Task<IActionResult> CancelBooking(Guid id)
     if (booking == null)
         return NotFound("Booking not found");
 
-    // ❌ Already processed
-    if (booking.Status != "Accepted")
-        return BadRequest("Only accepted bookings can be cancelled");
+    if (booking.Status != BookingStatus.Pending && booking.Status != BookingStatus.Accepted)
+        return BadRequest("Only pending or accepted bookings can be cancelled");
 
-    // 🚫 NEW RULE → Cannot cancel after ride started
-    if (booking.Ride.DepartureTime <= DateTime.UtcNow)
+    if (booking.Ride.Status == "InProgress")
         return BadRequest("Ride already started. Cancellation not allowed.");
 
-    // ✅ Refund seat
-    booking.Ride.AvailableSeats += 1;
+    // Refund seats that were reserved at booking creation
+    booking.Ride.AvailableSeats += booking.SeatsBooked;
 
-    booking.Status = "Cancelled";
+    booking.Status = BookingStatus.Cancelled;
 
     await _context.SaveChangesAsync();
+
+    await BroadcastBookingUpdate(booking.Id, booking.RideId, booking.PassengerId, "Cancelled");
+    await BroadcastSeatsUpdated(booking.RideId, booking.Ride.AvailableSeats, booking.Ride.TotalSeats);
 
     return Ok("Booking cancelled successfully");
 }
@@ -315,28 +405,41 @@ public async Task<IActionResult> GetMyBookings([FromQuery] string? status)
         .Where(b => b.PassengerId == passengerId);
 
     if (!string.IsNullOrEmpty(status))
+{
+    if (Enum.TryParse<BookingStatus>(status, true, out var parsedStatus))
     {
-        query = query.Where(b => b.Status == status);
+        query = query.Where(b => b.Status == parsedStatus);
     }
+}
 
     var bookings = await query
-        .OrderByDescending(b => b.CreatedAt) // ⚠ use correct column name
+        .OrderByDescending(b => b.CreatedAt)
         .Select(b => new
         {
-            b.Id,
-            b.Status,
-            b.PickupStop,
-            b.DropoffStop,
-            Ride = new
+            id                 = b.Id,
+            rideId             = b.RideId,
+            status             = b.Status.ToString(),
+            seatsBooked        = b.SeatsBooked,
+            totalPrice         = b.TotalPrice > 0 ? b.TotalPrice : b.Ride.Price * b.SeatsBooked,
+            pickupStop         = b.PickupStop,
+            dropoffStop        = b.DropoffStop,
+            passengerAddress   = b.PassengerAddress,
+            passengerLatitude  = b.PassengerLatitude,
+            passengerLongitude = b.PassengerLongitude,
+            createdAt          = b.CreatedAt,
+            ride = new
             {
-                b.Ride.FromAddress,
-                b.Ride.ToAddress,
-                b.Ride.DepartureTime
+                fromAddress     = b.Ride.FromAddress,
+                toAddress       = b.Ride.ToAddress,
+                departureTime   = b.Ride.DepartureTime,
+                price           = b.Ride.Price,
+                status          = b.Ride.Status,
+                pickupLocation  = b.Ride.PickupLocation
             },
-            Driver = new
+            driver = new
             {
-                b.Ride.Driver.FullName,
-                b.Ride.Driver.PhoneNumber
+                fullName    = b.Ride.Driver.FullName,
+                phoneNumber = b.Ride.Driver.PhoneNumber
             }
         })
         .ToListAsync();

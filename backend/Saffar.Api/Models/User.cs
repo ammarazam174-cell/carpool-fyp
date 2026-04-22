@@ -4,31 +4,60 @@ using System.ComponentModel.DataAnnotations;
 namespace Saffar.Api.Models
 {
     public class User
-{
-    [Key]
-    public Guid Id { get; set; } = Guid.NewGuid();
+    {
+        [Key]
+        public Guid Id { get; set; } = Guid.NewGuid();
 
-    [MaxLength(100)]
-    public string? FullName { get; set; }   // ← nullable rakho
+        [MaxLength(100)]
+        public string? FullName { get; set; }
 
-    [Required, MaxLength(20)]
-    public string PhoneNumber { get; set; }
+        [Required, MaxLength(20)]
+        public string PhoneNumber { get; set; }
 
-    [Required, MaxLength(20)]
-    public string Role { get; set; }
+        [Required, MaxLength(20)]
+        public string Role { get; set; }
 
-    public decimal Earnings { get; set; } = 0;
+        // 🔐 AUTH
+        [Required, MaxLength(100)]
+        public string Email { get; set; }
 
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        [Required]
+        public string PasswordHash { get; set; }
 
-    public bool IsVerified { get; set; } = false;
+        public DateTime? DateOfBirth { get; set; }
 
-    public int? Age { get; set; }
+        [MaxLength(15)]
+        public string? CNIC { get; set; }
 
-    public string? ProfileImageUrl { get; set; }
+        // 💰 DRIVER STATS
+        public decimal Earnings { get; set; } = 0;
+        public double Rating { get; set; } = 0;
 
-    public bool IsProfileComplete { get; set; } = false;
+        // 🧾 SYSTEM
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public bool IsVerified { get; set; } = false;
+        public bool IsProfileComplete { get; set; } = false;
 
-    public double Rating { get; set; }
-}
+        // 👤 PROFILE
+        public int? Age { get; set; }
+        public string? Gender { get; set; }
+        public string? ProfileImageUrl { get; set; }
+
+        // 🪪 DRIVER VERIFICATION (NEW 🔥)
+        public string? CNICImageUrl { get; set; }
+        public string? LicenseImageUrl { get; set; }
+
+        // 🚗 VEHICLE DETAILS (NEW 🔥)
+        public string? VehicleName { get; set; }
+        public string? VehicleNumber { get; set; }
+        public string? VehicleModel { get; set; }
+
+        // 🧠 FUTURE READY (OPTIONAL)
+        public bool IsDriverApproved { get; set; } = false;
+        public string DriverStatus { get; set; } = "Pending"; // "Pending" | "Approved" | "Rejected"
+
+        // 🔑 PASSWORD RESET (OTP-based)
+        public string? ResetOtpHash { get; set; }
+        public DateTime? ResetOtpExpiry { get; set; }
+    }
 }

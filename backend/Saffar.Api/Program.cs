@@ -5,6 +5,8 @@ using Microsoft.OpenApi.Models;
 using System.Text;
 using Saffar.Api.Data;
 using Saffar.Api.Services;
+using Saffar.Api.Hubs;
+using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,19 +17,31 @@ builder.Services.AddDbContext<SaffarDbContext>(options =>
 // Controllers
 builder.Services.AddControllers();
 
+// SignalR
+builder.Services.AddSignalR();
+
 // 🔔 PUSH NOTIFICATION SERVICE (ADD HERE)
 builder.Services.AddScoped<PushNotificationService>();
 
-// 🔥 CORS
+// 🔥 CORS — AllowCredentials() is required for SignalR WebSocket handshake
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend",
         policy =>
         {
             policy
-                .WithOrigins("http://localhost:5173")
+                .WithOrigins(
+                    // Web client (Vite dev server)
+                    "http://localhost:5173",
+                    "http://localhost:5174",
+                    // Expo web (mobile client running via `expo start --web`)
+                    "http://localhost:8081",
+                    "http://localhost:19006",
+                    "http://10.0.2.2:19006"
+                )
                 .AllowAnyHeader()
-                .AllowAnyMethod();
+                .AllowAnyMethod()
+                .AllowCredentials();
         });
 });
 
@@ -47,7 +61,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         ValidAudience = builder.Configuration["Jwt:Audience"],
         IssuerSigningKey = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"])
-        )
+        ),
+        RoleClaimType = ClaimTypes.Role
     };
 });
 
@@ -86,25 +101,23 @@ builder.Services.AddSwaggerGen(c =>
         }
     });
 });
-FirebaseService.Init();
+// FirebaseService.Init();
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+app.UseSwagger();
+app.UseSwaggerUI();
+
+// Static files must come before routing so /uploads/* is served directly
+app.UseStaticFiles();
 
 app.UseHttpsRedirection();
 
-// 🔥 VERY IMPORTANT
 app.UseCors("AllowFrontend");
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-
-app.UseStaticFiles();
+app.MapHub<BookingHub>("/bookingHub");
 
 app.Run();
