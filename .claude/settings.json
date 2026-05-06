@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-NetConnectionProfile)",
+      "Bash(Get-ChildItem -Path \"d:\\\\Ammar\\\\carpool-fyp-main\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(ipconfig)",
+      "Bash(findstr /C:\"IPv4 Address\" /C:\"Wireless LAN\")",
+      "PowerShell(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^127\\\\.|^169\\\\.254\\\\.' } | Select-Object IPAddress, InterfaceAlias | Format-Table -AutoSize)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://192.168.100.52:5000/swagger/index.html\" -UseBasicParsing -TimeoutSec 4; \"OK $\\($r.StatusCode\\)\" } catch { \"FAIL: \" + $_.Exception.Message })",
+      "PowerShell(Get-NetFirewallProfile)",
+      "PowerShell(Get-NetFirewallRule -Direction Inbound -Enabled True -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'saffar|dotnet|kestrel|port 5000|:5000' } | Select-Object DisplayName, Action, Profile | Format-Table -AutoSize)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://192.168.18.220:5000/swagger/index.html\" -UseBasicParsing -TimeoutSec 4; \"OK $\\($r.StatusCode\\)\" } catch { \"FAIL: \" + $_.Exception.Message })",
+      "PowerShell(dotnet run --project \"d:\\\\Ammar\\\\carpool-fyp-main\\\\backend\\\\SeedAdmin\\\\SeedAdmin.csproj\")"
+    ]
+  }
+}
